@@ -170,14 +170,7 @@
     <script type="text/javascript">
         let map, markers = [], tempLngLat = null, tempAddress = '', searchTimeout = null;
         let mapMarkers = [], geocoder, autoComplete, placeSearch, editingMarkerId = null;
-        const DATA_KEY = 'mapMarkers_data';
-        const TOKEN_KEY = 'gh_token';
-        const BUILTIN_TOKEN = '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';
-        const GITHUB_OWNER = 'xlyljh';
-        const GITHUB_REPO = 'map-marker-server';
-        const GITHUB_BRANCH = 'master';
-        const RAW_URL = 'https://raw.githubusercontent.com/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/' + GITHUB_BRANCH + '/markers.json';
-        const API_URL = 'https://api.github.com/repos/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/contents/markers.json';
+        const API_BASE = window.location.origin;
 
         // 显示提示信息
         function showToast(message, type = 'info') {
@@ -279,36 +272,31 @@
             document.getElementById('markerName').focus();
         }
 
-        // 从GitHub加载云端数据
-        function hasToken() {
-            var t = localStorage.getItem(TOKEN_KEY);
-            return t && t.length > 5;
-        }
-
         async function loadMarkers() {
             try {
                 setSyncStatus('syncing', '同步中...');
-                var res = await fetch(RAW_URL);
+                var res = await fetch(API_BASE + '/api/markers');
                 if (!res.ok) throw new Error('网络错误');
-                var text = await res.text();
-                markers = JSON.parse(text);
+                markers = await res.json();
                 renderMarkers();
                 updateStats();
                 setSyncStatus('connected', '已同步 ' + markers.length + '个');
-                document.getElementById('lastSync').textContent = '云端: ' + new Date().toLocaleTimeString('zh-CN');
+                document.getElementById('lastSync').textContent = '最后更新: ' + new Date().toLocaleTimeString('zh-CN');
             } catch (err) {
-                console.error('加载云端失败:', err);
+                console.error('加载失败:', err);
                 setSyncStatus('error', '连接失败');
-                showToast('无法连接云端，请检查网络', 'error');
+                var saved = localStorage.getItem('mapMarkers_backup');
+                if (saved) { markers = JSON.parse(saved); renderMarkers(); updateStats(); showToast('服务器连接失败，已使用本地数据', 'error'); }
             }
         }
 
         async function refreshMarkers() { await loadMarkers(); }
 
-        // 清理标记数据
+        // 清理标记数据，移除不可序列化的地图对象
         function cleanMarkersForSave(data) {
             return data.map(function(m) {
                 var clean = {};
+                // 只复制纯数据字段
                 ['id','name','category','remark','address','lng','lat','createTime','updateTime','history'].forEach(function(key) {
                     if (m[key] !== undefined) clean[key] = m[key];
                 });
@@ -317,42 +305,25 @@
         }
 
         async function saveMarkersToServer() {
-            var token = localStorage.getItem(TOKEN_KEY);
             try {
                 var cleanData = cleanMarkersForSave(markers);
-                var jsonStr = JSON.stringify(cleanData, null, 2);
-
-                // 1. 获取文件SHA
-                var infoRes = await fetch(API_URL, {
-                    headers: { 'Authorization': 'token ' + token, 'User-Agent': 'app' }
+                var res = await fetch(API_BASE + '/api/markers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cleanData)
                 });
-                if (!infoRes.ok) throw new Error('获取文件信息失败');
-                var info = await infoRes.json();
-
-                // 2. 更新文件
-                var content = btoa(unescape(encodeURIComponent(jsonStr)));
-                var updateRes = await fetch(API_URL, {
-                    method: 'PUT',
-                    headers: { 'Authorization': 'token ' + token, 'Content-Type': 'application/json', 'User-Agent': 'app' },
-                    body: JSON.stringify({
-                        message: '更新标记数据 - ' + new Date().toLocaleString('zh-CN'),
-                        content: content,
-                        sha: info.sha,
-                        branch: GITHUB_BRANCH
-                    })
-                });
-                if (!updateRes.ok) {
-                    var errText = await updateRes.text();
-                    throw new Error(JSON.parse(errText).message || '保存失败');
-                }
-
+                if (!res.ok) throw new Error('保存失败');
+                var data = await res.json();
+                updateStats();
                 setSyncStatus('connected', '已同步 ' + markers.length + '个');
-                document.getElementById('lastSync').textContent = '云端: ' + new Date().toLocaleTimeString('zh-CN');
+                document.getElementById('lastSync').textContent = '最后更新: ' + new Date().toLocaleTimeString('zh-CN');
                 return true;
             } catch (err) {
-                console.error('保存到云端失败:', err);
-                setSyncStatus('error', '保存失败');
-                showToast('保存失败：' + err.message, 'error');
+                console.error('保存失败:', err);
+                setSyncStatus('error', '同步失败');
+                // 清理后备份
+                var backup = cleanMarkersForSave(markers);
+                localStorage.setItem('mapMarkers_backup', JSON.stringify(backup));
                 return false;
             }
         }
@@ -580,16 +551,7 @@
         function searchMarkers(keyword) { renderMarkers(keyword); }
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
         function updateStats() { document.getElementById('markerCount').textContent = markers.length; }
-
-        // 自动配置内置Token
-        window.onload = function() {
-            if (!localStorage.getItem(TOKEN_KEY)) {
-                localStorage.setItem(TOKEN_KEY, BUILTIN_TOKEN);
-            }
-            if (typeof AMap !== 'undefined') {
-                initMap();
-            }
-        };
+        window.onload = initMap;
     </script>
 </body>
 </html>
