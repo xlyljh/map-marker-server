@@ -1,0 +1,14 @@
+{
+  "name": "map-marker-server",
+  "version": "1.0.0",
+  "description": "地图标记共享服务 - 支持多人同时使用",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "localtunnel": "^2.0.2"
+  }
+}

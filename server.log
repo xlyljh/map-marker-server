@@ -1,0 +1,18 @@
+# 工作日志 - 2026-05-02
+
+## 地图标记工具修复
+
+### 修复的问题
+1. **数据文件编码损坏** - markers.json 中中文乱码
+   - 修复：用同步方法 `fs.readFileSync/writeFileSync` + `'utf8'` 重写 server.js
+
+2. **保存标记时循环引用报错** - `Converting circular structure to JSON`
+   - 原因：`renderMarkers()` 给每个标记对象添加了 `mapMarkerObj`（高德 Marker 实例），该对象内部有循环引用
+   - 报错：`JSON.stringify(markers)` 遇到 `mapMarkerObj` 属性无法序列化
+   - 修复：在 `saveMarkersToServer` 中添加 `cleanMarkersForSave()` 函数，发送前只保留纯数据字段（id/name/category/remark/address/lng/lat/createTime/updateTime/history）
+   - 索引.html 第 368 行：`marker.mapMarkerObj = markerObj;` — 这是根因
+
+### 当前状态
+- 服务器运行在 http://localhost:3000
+- 数据文件：`D:\workbuddy\map-server\markers.json`
+- 浏览器打开页面中，需刷新生效
