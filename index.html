@@ -170,7 +170,16 @@
     <script type="text/javascript">
         let map, markers = [], tempLngLat = null, tempAddress = '', searchTimeout = null;
         let mapMarkers = [], geocoder, autoComplete, placeSearch, editingMarkerId = null;
-        const API_BASE = window.location.origin;
+        let dataSha = ''; // GitHub文件SHA
+
+        // GitHub配置
+        const GITHUB_OWNER = 'xlyljh';
+        const GITHUB_REPO = 'map-marker-server';
+        const GITHUB_FILE = 'markers.json';
+        const GITHUB_BRANCH = 'master';
+        const RAW_URL = 'https://raw.githubusercontent.com/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/' + GITHUB_BRANCH + '/' + GITHUB_FILE;
+        const API_URL = 'https://api.github.com/repos/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/contents/' + GITHUB_FILE;
+        const GITHUB_TOKEN = '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';
 
         // 显示提示信息
         function showToast(message, type = 'info') {
@@ -275,9 +284,10 @@
         async function loadMarkers() {
             try {
                 setSyncStatus('syncing', '同步中...');
-                var res = await fetch(API_BASE + '/api/markers');
+                var res = await fetch(RAW_URL);
                 if (!res.ok) throw new Error('网络错误');
-                markers = await res.json();
+                var text = await res.text();
+                markers = JSON.parse(text);
                 renderMarkers();
                 updateStats();
                 setSyncStatus('connected', '已同步 ' + markers.length + '个');
@@ -286,7 +296,7 @@
                 console.error('加载失败:', err);
                 setSyncStatus('error', '连接失败');
                 var saved = localStorage.getItem('mapMarkers_backup');
-                if (saved) { markers = JSON.parse(saved); renderMarkers(); updateStats(); showToast('服务器连接失败，已使用本地数据', 'error'); }
+                if (saved) { markers = JSON.parse(saved); renderMarkers(); updateStats(); showToast('加载失败，已使用本地数据', 'error'); }
             }
         }
 
@@ -296,7 +306,6 @@
         function cleanMarkersForSave(data) {
             return data.map(function(m) {
                 var clean = {};
-                // 只复制纯数据字段
                 ['id','name','category','remark','address','lng','lat','createTime','updateTime','history'].forEach(function(key) {
                     if (m[key] !== undefined) clean[key] = m[key];
                 });
@@ -307,13 +316,32 @@
         async function saveMarkersToServer() {
             try {
                 var cleanData = cleanMarkersForSave(markers);
-                var res = await fetch(API_BASE + '/api/markers', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(cleanData)
+                var jsonStr = JSON.stringify(cleanData, null, 2);
+                
+                // 1. 先获取当前文件SHA
+                var infoRes = await fetch(API_URL, {
+                    headers: { 'Authorization': 'token ' + GITHUB_TOKEN }
                 });
-                if (!res.ok) throw new Error('保存失败');
-                var data = await res.json();
+                if (!infoRes.ok) throw new Error('获取文件信息失败');
+                var info = await infoRes.json();
+
+                // 2. 更新文件
+                var content = btoa(unescape(encodeURIComponent(jsonStr)));
+                var updateRes = await fetch(API_URL, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': 'token ' + GITHUB_TOKEN,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: '更新标记数据 - ' + new Date().toLocaleString('zh-CN'),
+                        content: content,
+                        sha: info.sha,
+                        branch: GITHUB_BRANCH
+                    })
+                });
+                if (!updateRes.ok) throw new Error('保存到GitHub失败');
+                
                 updateStats();
                 setSyncStatus('connected', '已同步 ' + markers.length + '个');
                 document.getElementById('lastSync').textContent = '最后更新: ' + new Date().toLocaleTimeString('zh-CN');
@@ -321,7 +349,6 @@
             } catch (err) {
                 console.error('保存失败:', err);
                 setSyncStatus('error', '同步失败');
-                // 清理后备份
                 var backup = cleanMarkersForSave(markers);
                 localStorage.setItem('mapMarkers_backup', JSON.stringify(backup));
                 return false;
