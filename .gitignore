@@ -7,4 +7,8 @@ tunnel_url.txt
 cpolar/
 cpolar-bin/
 cpolar.zip
-甲方维护指南.md
+payload.json
+gh_payload.json
+push_to_github.py
+upload_to_github.js
+write_payload.py

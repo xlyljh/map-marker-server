@@ -80,6 +80,7 @@
         <div class="header-actions">
             <button class="btn btn-primary" onclick="refreshMarkers()">刷新数据</button>
             <button class="btn btn-success" onclick="toggleSidebar()">标记列表</button>
+            <button class="btn" style="background:rgba(255,255,255,0.15);color:white;padding:8px 12px;font-size:13px;" onclick="showSettings()">设置</button>
         </div>
     </div>
 
@@ -161,6 +162,30 @@
         </div>
     </div>
 
+    <!-- 设置模态框 -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header">数据共享设置</div>
+            <div class="form-group">
+                <label>GitHub 令牌（Token）</label>
+                <input type="password" id="tokenInput" placeholder="输入 GitHub Personal Access Token" style="font-size:13px;">
+                <div style="font-size:12px;color:#999;margin-top:6px;line-height:1.5;">
+                    需要这个令牌才能多人共享数据。<br>
+                    没有的话去 <a href="https://github.com/settings/tokens" target="_blank" style="color:#1890ff;">GitHub Token 页面</a> 创建一个（勾选 repo 权限）
+                </div>
+            </div>
+            <div class="form-group">
+                <label>当前状态</label>
+                <div id="shareStatus" style="background:#f5f5f5;padding:10px 12px;border-radius:6px;font-size:13px;">未配置共享令牌</div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="closeSettings()">关闭</button>
+                <button class="btn btn-success" onclick="saveToken()">保存令牌</button>
+                <button class="btn btn-danger" onclick="clearToken()">清除令牌</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 高德地图JS API -->
     <script type="text/javascript">
         window._AMapSecurityConfig = { securityJsCode: 'e16e2b627c35f1bcad55d7a057621318' };
@@ -171,6 +196,12 @@
         let map, markers = [], tempLngLat = null, tempAddress = '', searchTimeout = null;
         let mapMarkers = [], geocoder, autoComplete, placeSearch, editingMarkerId = null;
         const DATA_KEY = 'mapMarkers_data';
+        const TOKEN_KEY = 'gh_token';
+        const GITHUB_OWNER = 'xlyljh';
+        const GITHUB_REPO = 'map-marker-server';
+        const GITHUB_BRANCH = 'master';
+        const RAW_URL = 'https://raw.githubusercontent.com/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/' + GITHUB_BRANCH + '/markers.json';
+        const API_URL = 'https://api.github.com/repos/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/contents/markers.json';
 
         // 显示提示信息
         function showToast(message, type = 'info') {
@@ -275,28 +306,25 @@
         async function loadMarkers() {
             try {
                 setSyncStatus('syncing', '加载中...');
-                var saved = localStorage.getItem(DATA_KEY);
-                if (saved) {
-                    markers = JSON.parse(saved);
-                } else {
-                    markers = [];
-                }
+                var res = await fetch(RAW_URL);
+                if (!res.ok) throw new Error('网络错误');
+                var text = await res.text();
+                markers = JSON.parse(text);
                 renderMarkers();
                 updateStats();
-                setSyncStatus('connected', markers.length + '个标记');
-                document.getElementById('lastSync').textContent = '本地存储';
+                setSyncStatus('connected', '已同步 ' + markers.length + '个');
+                document.getElementById('lastSync').textContent = '最后更新: ' + new Date().toLocaleTimeString('zh-CN');
             } catch (err) {
                 console.error('加载失败:', err);
-                setSyncStatus('error', '加载失败');
-                markers = [];
-                renderMarkers();
-                updateStats();
+                setSyncStatus('error', '连接失败');
+                var saved = localStorage.getItem(DATA_KEY);
+                if (saved) { markers = JSON.parse(saved); renderMarkers(); updateStats(); showToast('服务器加载失败，已使用本地数据', 'error'); }
             }
         }
 
         async function refreshMarkers() { await loadMarkers(); }
 
-        // 清理标记数据，移除不可序列化的地图对象
+        // 清理标记数据
         function cleanMarkersForSave(data) {
             return data.map(function(m) {
                 var clean = {};
@@ -307,17 +335,61 @@
             });
         }
 
+        // 获取存储的GitHub令牌
+        function getToken() {
+            return localStorage.getItem(TOKEN_KEY);
+        }
+
+        function hasToken() {
+            var t = getToken();
+            return t && t.length > 5;
+        }
+
         async function saveMarkersToServer() {
-            try {
+            var token = getToken();
+            if (!token) {
+                // 没有令牌就存本地
                 var cleanData = cleanMarkersForSave(markers);
                 localStorage.setItem(DATA_KEY, JSON.stringify(cleanData));
                 updateStats();
-                setSyncStatus('connected', markers.length + '个标记');
-                document.getElementById('lastSync').textContent = '刚刚保存';
+                setSyncStatus('local', '本地模式');
+                document.getElementById('lastSync').textContent = '未配置共享';
+                return true;
+            }
+
+            try {
+                var cleanData = cleanMarkersForSave(markers);
+                var jsonStr = JSON.stringify(cleanData, null, 2);
+
+                // 1. 获取文件信息得到SHA
+                var infoRes = await fetch(API_URL, {
+                    headers: { 'Authorization': 'token ' + token, 'User-Agent': 'app' }
+                });
+                if (!infoRes.ok) throw new Error('获取文件信息失败');
+                var info = await infoRes.json();
+
+                // 2. 更新文件
+                var content = btoa(unescape(encodeURIComponent(jsonStr)));
+                var updateRes = await fetch(API_URL, {
+                    method: 'PUT',
+                    headers: { 'Authorization': 'token ' + token, 'Content-Type': 'application/json', 'User-Agent': 'app' },
+                    body: JSON.stringify({
+                        message: '更新标记数据 - ' + new Date().toLocaleString('zh-CN'),
+                        content: content,
+                        sha: info.sha,
+                        branch: GITHUB_BRANCH
+                    })
+                });
+                if (!updateRes.ok) throw new Error('保存到云端失败');
+
+                setSyncStatus('connected', '已同步 ' + markers.length + '个');
+                document.getElementById('lastSync').textContent = '云端: ' + new Date().toLocaleTimeString('zh-CN');
                 return true;
             } catch (err) {
-                console.error('保存失败:', err);
-                setSyncStatus('error', '保存失败');
+                console.error('保存到云端失败:', err);
+                setSyncStatus('error', '云端同步失败');
+                // fallback: 存本地
+                localStorage.setItem(DATA_KEY, JSON.stringify(cleanMarkersForSave(markers)));
                 return false;
             }
         }
@@ -545,7 +617,58 @@
         function searchMarkers(keyword) { renderMarkers(keyword); }
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
         function updateStats() { document.getElementById('markerCount').textContent = markers.length; }
-        window.onload = initMap;
+
+        // 设置界面
+        function showSettings() {
+            var token = getToken() || '';
+            document.getElementById('tokenInput').value = token;
+            updateShareStatus();
+            document.getElementById('settingsModal').classList.add('active');
+        }
+        function closeSettings() { document.getElementById('settingsModal').classList.remove('active'); }
+
+        function updateShareStatus() {
+            var el = document.getElementById('shareStatus');
+            if (hasToken()) {
+                var t = getToken();
+                el.innerHTML = '✅ 已配置共享令牌<br><small style="color:#999;">' + t.substring(0, 10) + '...' + t.substring(t.length-4) + '</small>';
+            } else {
+                el.innerHTML = '❌ 未配置共享令牌 - 数据仅保存在本地浏览器';
+            }
+        }
+
+        function saveToken() {
+            var token = document.getElementById('tokenInput').value.trim();
+            if (!token) { showToast('请输入令牌', 'error'); return; }
+            localStorage.setItem(TOKEN_KEY, token);
+            updateShareStatus();
+            showToast('令牌已保存！多人数据共享已开启', 'success');
+            loadMarkers();
+        }
+
+        function clearToken() {
+            if (!confirm('确定清除令牌？清除后数据将仅保存在本地。')) return;
+            localStorage.removeItem(TOKEN_KEY);
+            document.getElementById('tokenInput').value = '';
+            updateShareStatus();
+            showToast('令牌已清除', 'info');
+        }
+
+        // 启动时检查令牌状态
+        setTimeout(function() {
+            if (hasToken()) {
+                document.getElementById('lastSync').textContent = '云端共享已配置';
+                setSyncStatus('connected', '云端模式');
+                loadMarkers();
+            }
+        }, 500);
+
+        window.onload = function() {
+            // initMap 在页面加载时由高德地图 API 的回调触发
+            if (typeof AMap !== 'undefined') {
+                initMap();
+            }
+        };
     </script>
 </body>
 </html>
